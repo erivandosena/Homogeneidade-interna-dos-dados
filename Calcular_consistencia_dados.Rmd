@@ -1,0 +1,290 @@
+---
+title: "Consistência Interna dos Dados usando R"
+author: "Erivando Sena (Com adaptações do original de Simon Jackson - BLOGR)"
+date: "27 de maio de 2019"
+output:
+  prettydoc::html_pretty:
+    theme: cayman
+    highlight: github
+  word_document: default
+  pdf_document: default
+  html_document: default
+  html_notebook: default
+subtitle: Cinco maneiras de calcular a consistência interna
+email: erivandosena@gmail.com
+---
+
+<!-- 
+Este é um bloco de notas [R Markdown] (http://rmarkdown.rstudio.com). Quando você executa código no bloco de anotações, os resultados aparecem abaixo do código.  
+Tente executar este pedaço clicando no botão *Run* dentro do pedaço ou colocando o cursor dentro dele e pressionando *Ctrl + Shift + Enter*. 
+-->
+
+> *O objetivo desta versão adaptada utilizando R Notebook é reapresentar à análise realizada no idioma Português Brasileiro para que mais pessoas possam obter acesso ao conteúdo publicado originalmente em inglês no [blog de Simon Jackson](https://drsimonj.svbtle.com/how-to-calculate-internal-consistency){target="_top"}.*
+
+Vamos obter psicometria e aprender uma série de maneiras de calcular a consistência interna de um teste ou questionário em R. Estaremos cobrindo:
+
+**1.** Correlação média entre itens.  
+**2.** Correlação média total do item.  
+**3.** Alfa de Cronbach.  
+**4.** Confiabilidade dividida. *(ajustada usando a fórmula da profecia de Spearman-Brown)*  
+**5.** Confiabilidade composta.  
+
+Se você não conhece nada disso, aqui estão alguns recursos para você se atualizar:  
+•	[Consistência interna (Wikipédia)](https://pt.wikipedia.org/wiki/Consist%C3%AAncia_interna){target="_top"}.  
+•	[Alfa de Cronbach (Wikipédia)](https://pt.wikipedia.org/wiki/Alfa_de_Cronbach){target="_top"}.  
+•	[Uso do Coeficiente Alfa de Cronbach em Avaliações (Infoteca-e/Embrapa)](https://www.infoteca.cnptia.embrapa.br/bitstream/doc/936813/1/DOC482011ID112.pdf){target="_top"}.  
+•	[Alfa de Cronbach (Blog Sonia Vieira)](http://soniavieira.blogspot.com/2015/10/alfa-de-cronbach.html){target="_top"}.  
+
+### Os pacotes
+
+Acrescentei este trecho de código R a fim de faciliar na instalação dos pacotes utilizados nesta análise.
+
+```{r, echo = TRUE, warning = FALSE, message = FALSE}
+# Verificar e instalar o(s) pacote(s) a utilizar na analise.
+pacotes_analise <- c("tidyverse","corrr","psych","lavaan") 
+# Necessarios apenas para RMarkdown.
+pacotes_padrao <- c("installr","rmarkdown","tinytex","prettydoc") 
+if (length(setdiff(c(pacotes_padrao, pacotes_analise), rownames(installed.packages()))) > 0) {
+  install.packages(setdiff(c(pacotes_padrao, pacotes_analise), rownames(installed.packages()))) 
+  # RMarkdown precisa de Pandoc e MiKTeX instalados. https://miktex.org/2.9/setup.
+  install.pandoc() 
+}
+
+```
+
+### Os dados
+Para este notebook, usaremos dados sobre uma medida de personalidade Big 5 que está disponível gratuitamente nos [Testes de Personalidade](http://personality-testing.info/){target="_top"}.
+Você pode fazer o download dos dados [AQUI](http://personality-testing.info/_rawdata/BIG5.zip){target="_top"} ou se preferir, à execução do código a seguir manipulará o download e salvará os dados em um objeto chamado `dados`:
+
+```{r, echo = TRUE, warning = FALSE, message = FALSE, cache = TRUE}
+# Setando codificacao para representar qualquer caractere universal padrao Unicode.
+options(encoding="UTF-8")
+ 
+# Setando o local da pasta de trabalho.
+setwd("E:/Outras Analises R/Calculo da consistencia interna em R")
+
+arq_temp <- tempfile()
+download.file("http://personality-testing.info/_rawdata/BIG5.zip", arq_temp, mode="wb")
+dados <- read.table(unz(arq_temp, "BIG5/data.csv"), header = TRUE, sep="\t")
+unlink(arq_temp); rm(arq_temp)
+
+```
+
+No momento em que o post original foi escrito, este conjunto de dados continha dados para 19719 pessoas, começando com algumas informações demográficas e, em seguida, suas respostas em 50 itens: 10 para cada dimensão do Big 5. Isso é um pouco demais, então vamos reduzi-lo para trabalhar nos primeiros 500 participantes e nos itens de extroversão (`E1` para `E10`):
+
+```{r, echo = TRUE, warning = FALSE, message = FALSE}
+
+dados <- dados[1:500, paste0("E", 1:10)]
+str(dados)
+
+```
+
+Aqui está uma lista dos itens de extroversão que as pessoas estão classificando de *1 = Discordo* a *5 = Concordo*:  
+•	E1 Eu vivo em festa.  
+•	E2 Eu não falo muito.  
+•	E3 Eu me sinto confortável em torno das pessoas.  
+•	E4 Eu me mantenho em segundo plano.  
+•	E5 Eu inicio conversas.  
+•	E6 Eu tenho pouco a falar.  
+•	E7 Eu falo com muitas pessoas diferentes em festas.  
+•	E8 Não gosto de chamar atenção para mim mesmo.  
+•	E9 Eu não me importo de ser o centro das atenções.  
+•	E10 Eu não converso com estranhos.  
+
+Você pode ver que há cinco itens que precisam ser marcados inversamente (`E2`, `E4`, `E6`, `E8`, `E10`). Como as classificações variam de `1` a `5`, podemos fazer o seguinte:
+
+```{r, echo = TRUE, warning = FALSE, message = FALSE}
+
+dados[, paste0("E", c(2, 4, 6, 8, 10))] <- 6 - dados[, paste0("E", c(2, 4, 6, 8, 10))]
+
+```
+
+Agora temos um quadro de dados (data frame) de respostas com cada coluna sendo um item (pontuado na direção correta) e cada linha sendo um participante. Vamos iniciar!
+
+## 1. Correlação média entre itens
+A correlação entre itens é qualquer lugar fácil para começar. Para calcular essa estatística, precisamos das correlações entre todos os itens e depois calculá-las. Vamos usar o pacote [corrr](https://cran.rstudio.com/web/packages/corrr/){target="_top"} de *Simon Jackson* *(Obrigado! Simon)* para obter estas correlações da seguinte forma (sem viés aqui!):
+
+```{r, echo = TRUE, warning = FALSE, message = FALSE}
+
+library(tidyverse)
+library(corrr)
+
+dados %>% correlate()
+
+```
+    
+Como a diagonal já está definida `NA`, podemos obter a correlação média de cada item com todos os outros calculando as médias de cada coluna (excluindo a coluna `rowname`):
+
+```{r, echo = TRUE, warning = FALSE, message = FALSE}
+
+inter_item <- dados %>% correlate() %>% select(-rowname) %>% colMeans(na.rm = TRUE)
+inter_item
+
+```
+
+Além disso, note que `select()` vem do pacote **dplyr**, que é importado quando você usa o **corrr**.
+Podemos ver isso `E5` e `E7` estamos mais fortemente correlacionados com os outros itens em média do que `E8`. No entanto, a maioria dos itens se correlaciona com os outros em um intervalo razoavelmente restrito em torno de `0,4` a `0,5`.
+Para obter a média geral da correlação entre itens, calculamos a `mean()` (média) dos valores:
+
+```{r, echo = TRUE, warning = FALSE, message = FALSE}
+mean(inter_item)
+```
+No entanto, com esses valores, podemos explorar uma série de atributos sobre os relacionamentos entre os itens. Por exemplo, podemos visualizá-los em um histograma e destacar a média da seguinte forma:
+
+```{r, echo = TRUE, warning = FALSE, message = FALSE}
+
+library(ggplot2)
+
+data.frame(inter_item) %>% 
+  ggplot(aes(x = inter_item)) +
+  geom_histogram(bins = 10, alpha = .5) +
+  geom_vline(xintercept = mean(inter_item), color = "red") +
+  xlab("Correlação média entre itens") +
+  theme_bw()
+
+```
+
+## 2. Correlação média total do item
+Podemos investigar a correlação média item-total de maneira semelhante às correlações entre itens. A primeira coisa que precisamos fazer é calcular a pontuação total. Digamos que a pontuação de uma pessoa seja a média de suas respostas para todos os dez itens:
+
+```{r, echo = TRUE, warning = FALSE, message = FALSE}
+
+dados$score <- rowMeans(dados)
+head(dados)
+
+```
+
+Agora, vamos `correlate()` novamente, mas desta vez `focus()` sobre as correlações do score com os itens:
+
+```{r, echo = TRUE, warning = FALSE, message = FALSE}
+
+item_total <- dados %>% correlate() %>% focus(score)
+item_total
+
+```
+
+Mais uma vez, podemos calcular sua média como:
+
+```{r, echo = TRUE, warning = FALSE, message = FALSE}
+
+mean(item_total$score)
+
+```
+
+E podemos traçar os resultados:
+
+```{r, echo = TRUE, warning = FALSE, message = FALSE}
+
+item_total %>% 
+  ggplot(aes(x = score)) +
+  geom_histogram(bins = 10, alpha = .5) +
+  geom_vline(xintercept = mean(item_total$score), color = "red") +
+  xlab("Correlação média item-total") +
+  theme_bw()
+
+```
+ 
+## 3. Alfa de Cronbach
+O Alfa de Cronbach é uma das medidas de consistência interna mais amplamente relatadas. Embora seja possível implementar a matemática por trás disso, sou preguiçoso e gosto de usar a função `alpha()` do pacote **psych**. Essa função usa um **data frame** (quadro de dados) ou uma matriz de dados na estrutura que estamos usando: cada coluna é um item de teste/questionário, cada linha é uma pessoa. Vamos testá-lo abaixo. Note que `alpha()` também é uma função do pacote **ggplot2**, e isso cria um conflito. Para especificar que queremos `alpha()` do pacote psicológico, usaremos o nome do pacote **psych** implicitamente à função como segue **`psych::alpha()`**.
+
+```{r, echo = TRUE, warning = FALSE, message = FALSE}
+
+library(psych)
+
+dados$score <- NULL # Excluir a coluna de pontuacao que fizemos anteriormente.
+psych::alpha(dados, check.keys=TRUE)
+
+```
+
+Esta função geralmente fornece um intervalo de saída, o que nos interessa de std.alpha é o “alpha padronizado baseado nas correlações”. Observe também que obtemos “a correlação intertemporal média”, average_re várias versões da “correlação de cada item com a pontuação total”, como `raw.r`, cujos valores correspondem aos nossos cálculos anteriores.
+Se você quiser acessar o próprio valor alfa, faça o seguinte:
+
+```{r, echo = TRUE, warning = FALSE, message = FALSE}
+
+psych::alpha(dados, check.keys=TRUE)$total$std.alpha
+
+```
+
+## 4. Confiabilidade dividida *(ajustada usando a fórmula da profecia de Spearman-Brown)*
+Há momentos em que não podemos calcular a consistência interna usando respostas de itens. Por exemplo, costumo trabalhar com uma variável de tomada de decisão chamada imprudência. Essa variável é calculada depois que as pessoas respondem a perguntas (por exemplo, “Qual é o rio mais longo na Ásia”) e em seguida, decidem se devem ou não apostar que a resposta está correta. A imprudência é calculada como a proporção de respostas incorretas nas quais uma pessoa aposta.  
+
+Se você pensar sobre isso, não é possível calcular a consistência interna para essa variável usando qualquer uma das medidas acima. A razão para isso é que os itens que contribuem para as pontuações de imprudência de duas pessoas podem ser completamente diferentes. Uma pessoa poderia dar respostas incorretas nas questões de 1 a 5 (assim essas questões são calculadas), enquanto outra pessoa pode responder incorretamente às questões de 6 a 10. Assim, calcular imprudência para muitos indivíduos não é tão simples quanto somar os itens. Em vez disso, precisamos de um pool de itens para extrair diferentes combinações de perguntas para cada pessoa.  
+
+Para superar esse tipo de problema, um método apropriado para calcular a consistência interna é usar uma confiabilidade dividida. Isso implica dividir seus itens de teste pela metade (por exemplo, em ímpar e par) e calcular sua variável para cada pessoa com cada metade. Por exemplo, normalmente calculo imprudência para cada participante de itens ímpares e depois de itens pares. Essas pontuações são então correlacionadas e ajustadas usando a fórmula profecia/predição de Spearman-Brown (por exemplo, sobre esse assunto, veja algumas publicações científicas de Simon [aqui](https://www.researchgate.net/publication/292984167_Individual_Differences_in_Decision_Making_Depend_on_Cognitive_Abilities_Monitoring_and_Control){target="_top"} ou [aqui](https://www.researchgate.net/publication/278329159_Decision_Pattern_Analysis_as_a_General_Framework_for_Studying_Individual_Differences_in_Decision_Making){target="_top"}).  
+
+Semelhante ao alfa de Cronbach, um valor mais próximo de um e maior que zero indica maior consistência interna.  
+Ainda podemos calcular a confiabilidade da metade para variáveis que não têm esse problema! Então, vamos fazer isso com os nossos dados de extroversão da seguinte forma:
+
+```{r, echo = TRUE, warning = FALSE, message = FALSE}
+
+# Calculando a pontuacao total.
+score_e <- rowMeans(dados[, c(TRUE, FALSE)])  # Com itens pares.
+score_o <- rowMeans(dados[, c(FALSE, TRUE)])  # Com itens impares.
+
+# Correlação de pontuações de itens pares e ímpares.
+r <- cor(score_e, score_o)
+r
+
+# Ajuste com a formula da profecia de Spearman-Brown.
+(2 * r) / (1 + r)
+
+```
+
+Assim, neste caso, a abordagem de confiabilidade da metade dividida produz uma estimativa de consistência interna de `0,87`.
+
+## 5. Confiabilidade composta
+O método final para calcular a consistência interna que cobriremos é a confiabilidade composta. Sempre que possível, minha preferência pessoal é usar essa abordagem. Embora não seja perfeito, ele cuida de muitas suposições inadequadas que medem como o Alfa de Cronbach. Se as especificidades lhe interessarem, sugiro ler este [post](http://zencaroline.blogspot.com/2007/06/composite-reliability.html){target="_top"}.  
+
+A confiabilidade composta é baseada nas cargas fatoriais em uma análise fatorial confirmatória (AFC). No caso de uma escala unidimensional, definimos um CFA de um fator e em seguida, usamos as cargas fatoriais para calcular nossa estimativa de consistência interna.  
+
+Não vou entrar em detalhes, mas podemos interpretar uma pontuação de confiabilidade composta similarmente a qualquer outra métrica aqui abordada (mais próximo de uma indica melhor consistência interna). Nós vamos caber nosso modelo CFA usando o pacote [lavaan](https://cran.r-project.org/web/packages/lavaan/index.html){target="_top"} da seguinte forma:
+
+```{r, echo = TRUE, warning = FALSE, message = FALSE}
+
+# Definir o modelo.
+items <- paste(names(dados), collapse = "+")
+model <- paste("extraversion", items, sep = "=~")
+model
+
+# Ajusta o modelo.
+fit <- lavaan::cfa(model, data = dados)
+
+```
+
+Existem várias maneiras de obter a confiabilidade composta deste modelo. Vamos extrair as cargas fatoriais padronizadas e trabalhar com elas:
+
+```{r, echo = TRUE, warning = FALSE, message = FALSE}
+
+library(lavaan)
+
+sl <- lavaan::standardizedSolution(fit)
+sl <- sl$est.std[sl$op == "=~"]
+names(sl) <- names(dados)
+sl  # Estas sao as cargas fatoriais padronizadas para cada item.
+
+```
+
+Em seguida, obtemos a confiabilidade composta por meio do seguinte:
+
+```{r, echo = TRUE, warning = FALSE, message = FALSE}
+
+# Compute a variancia residual de cada item.
+re <- 1 - sl^2
+
+# Compute a confiabilidade composta.
+sum(sl)^2 / (sum(sl)^2 + sum(re))
+
+```
+
+Então você tem isso. A confiabilidade composta para o fator de extroversão é de **`0,90`**.
+Um aspecto atraente da confiabilidade composta é que podemos calcular isso para vários fatores no mesmo modelo. Por exemplo, digamos que incluímos todos os itens de personalidade em um CFA com cinco fatores, poderíamos fazer os cálculos acima separadamente para cada fator e obter sua confiabilidade composta.   
+
+Apenas para finalizar, vou mencionar que você pode usar as cargas fatoriais padronizadas para visualizar mais informações, como fizemos anteriormente com as correlações. Essa parte fica para você praticar!  
+
+Obrigado por ler e espero que esta análsie em versão R Notebook tenha sido útil para você.
+Se precisar entrar em contato comigo, envie e-mail para *[erivandosena@gmail.com](mailto:erivandosena@gmail.com){target="_top"}*.
+
+Se você quiser o código que produziu esta publicação, confira no meu [repositório do GitHub](https://github.com/erivandoramos/Homogeneidade-interna-dos-dados){target="_top"}.
+
+## REFERÊNCIAS
+BLOGR. **Five ways to calculate internal consistency**. Disponível em: <[https://drsimonj.svbtle.com/how-to-calculate-internal-consistency](https://drsimonj.svbtle.com/how-to-calculate-internal-consistency){target="_top"}>. Acesso em 27 mai. 2019.

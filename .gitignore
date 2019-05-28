@@ -1,0 +1,6 @@
+*.html
+.RData
+.Rhistory
+/rsconnect
+/Calcular_consistencia_dados_cache
+/Calcular_consistencia_dados_files
