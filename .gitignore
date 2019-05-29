@@ -1,4 +1,5 @@
 *.html
+.dcf
 .RData
 .Rhistory
 /rsconnect
